@@ -23,4 +23,4 @@ python main.py
 O servidor será iniciado na porta `5000`.
 
 ## 🔗 Repositório Relacionado
-- [Frontend (Streamlit)](https://github.com/HenriqueMerigo/frontend_marquei)
+- [Frontend (Streamlit)](https://github.com/HenriqueMerigo/frontend_marquei-)
