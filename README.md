@@ -13,5 +13,14 @@ API e motor de regras de negócio para o **Marquei**, ERP voltado para barbearia
 - Módulo de estoque e fluxo financeiro.
 - Integrações (Google Calendar, automações via n8n / WhatsApp).
 
+## ▶️ Iniciar servidor Flask
+Na pasta `backend_marquei-`, execute:
+
+```bash
+python main.py
+```
+
+O servidor será iniciado na porta `5000`.
+
 ## 🔗 Repositório Relacionado
 - [Frontend (Streamlit)](https://github.com/HenriqueMerigo/frontend_marquei)
