@@ -14,4 +14,4 @@ API e motor de regras de negócio para o **Marquei**, ERP voltado para barbearia
 - Integrações (Google Calendar, automações via n8n / WhatsApp).
 
 ## 🔗 Repositório Relacionado
-- [Frontend (Streamlit)](https://github.com/HenriqueMerigo/frontend_marquei)
+- [Frontend (Streamlit)](https://github.com/HenriqueMerigo/frontend_marquei-)
