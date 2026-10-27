@@ -603,6 +603,27 @@ def listar_agendamento_detalhes(id_agendamento):
 
     return jsonify(agendamento_detalhes), 200
 
+@app.route("/finaliza_status_agendamento/<int:id_agendamento>", methods=["PUT"])
+def finaliza_status_agendamento(id_agendamento):
+    db = get_db()
+    
+    query = """
+        UPDATE agendamento
+        SET ds_status = 'CONCLUIDO',
+        dh_alteracao = DATETIME('now')
+        WHERE id_agendamento = ?
+    """
+    
+    cursor = db.execute(query, (id_agendamento,))
+    db.commit()
+    
+    # Verifica se realmente atualizou algum registro (opcional, mas recomendado)
+    if cursor.rowcount == 0:
+        return jsonify({"error": "Agendamento não encontrado."}), 404
+
+    return jsonify({"message": "Agendamento concluído com sucesso!"}), 200
+
+
 ############################################################################################################ AGENDAMENTO_PRODUTO_SERVICO
 
 @app.route("/insere_agendamento_produto_servico", methods=["POST"])
