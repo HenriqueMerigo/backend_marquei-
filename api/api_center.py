@@ -793,3 +793,24 @@ def busca_produto_estoque_zero():
     cursor = db.execute("SELECT COUNT(id_produto_servico) FROM produto_servico WHERE qt_estoque <= 0 AND ds_categoria = 'PRODUTO';")
     
     return jsonify({"contagem": cursor.fetchone()[0]})
+
+@app.route("/busca_arrecadacao_liquida", methods=["GET"])
+def busca_arrecadacao_liquida():
+    db = get_db()
+    cursor = db.execute("SELECT SUM(vl_total) FROM financeiro;")
+    
+    return jsonify({"contagem": cursor.fetchone()[0]})
+
+@app.route("/busca_ticket_medio", methods=["GET"])
+def busca_ticket_medio():
+    db = get_db()
+    cursor = db.execute("SELECT AVG(vl_total) FROM financeiro;")
+    
+    return jsonify({"media": cursor.fetchone()[0]})
+
+@app.route("/busca_agendamento_hoje", methods=["GET"])
+def busca_agendamento_hoje():
+    db = get_db()
+    cursor = db.execute("SELECT count(id_agendamento) FROM agendamento WHERE DATE(dh_agendamento) = DATE('now', 'localtime');")
+    
+    return jsonify({"contagem": cursor.fetchone()[0]})

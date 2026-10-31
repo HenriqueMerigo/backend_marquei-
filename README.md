@@ -16,9 +16,7 @@ API e motor de regras de negócio para o **Marquei**, ERP voltado para barbearia
 ## ▶️ Iniciar servidor Flask
 Na pasta `backend_marquei-`, execute:
 
-```bash
-python main.py
-```
+```     bash python main.py     ```
 
 O servidor será iniciado na porta `5000`.
 
