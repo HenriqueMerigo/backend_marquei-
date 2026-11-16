@@ -623,6 +623,79 @@ def finaliza_status_agendamento(id_agendamento):
 
     return jsonify({"message": "Agendamento concluído com sucesso!"}), 200
 
+@app.route("/edita_agendamento/<int:id_agendamento>", methods=["PUT"])
+def edita_agendamento(id_agendamento):
+    db = get_db()
+    dados = request.get_json(silent=True) or {}
+
+    id_cliente = dados.get("id_cliente")
+    id_funcionario = dados.get("id_funcionario")
+    ds_status = str(dados.get("ds_status", "AGENDADO")).strip().upper()
+    vl_total_bruto_agendamento = dados.get("vl_total_bruto_agendamento")
+    vl_desconto_agendamento = dados.get("vl_desconto_agendamento")
+    vl_gorjeta_agendamento = dados.get("vl_gorjeta_agendamento")
+    vl_total_liquido_agendamento = dados.get("vl_total_liquido_agendamento")
+    dh_agendamento = dados.get("dh_agendamento")
+    itens = dados.get("itens", [])
+
+    if id_cliente is None or id_funcionario is None:
+        return jsonify({"error": "Os campos 'id_cliente' e 'id_funcionario' são obrigatórios."}), 400
+
+    if ds_status not in ["AGENDADO", "CANCELADO", "CONCLUIDO"]:
+        return jsonify({"error": "O campo 'ds_status' deve ser 'AGENDADO', 'CANCELADO' ou 'CONCLUIDO'."}), 400
+
+    try:
+        # 1. Atualiza os dados principais do agendamento
+        query_update = """
+            UPDATE agendamento
+            SET id_cliente = ?,
+                id_funcionario = ?,
+                ds_status = ?,
+                vl_total_bruto_agendamento = ?,
+                vl_desconto_agendamento = ?,
+                vl_gorjeta_agendamento = ?,
+                vl_total_liquido_agendamento = ?,
+                dh_agendamento = ?,
+                dh_alteracao = DATETIME('now')
+            WHERE id_agendamento = ?;
+        """
+        cursor = db.execute(query_update, (
+            id_cliente, id_funcionario, ds_status,
+            vl_total_bruto_agendamento, vl_desconto_agendamento,
+            vl_gorjeta_agendamento, vl_total_liquido_agendamento,
+            dh_agendamento, id_agendamento
+        ))
+
+        if cursor.rowcount == 0:
+            return jsonify({"error": "Agendamento não encontrado."}), 404
+
+        # 2. Remove os itens antigos vinculados para reinserir os novos atualizados
+        db.execute("DELETE FROM agendamento_produto_servico WHERE id_agendamento = ?;", (id_agendamento,))
+
+        # 3. Insere os novos itens enviados na edição
+        for item in itens:
+            id_prod_serv = item.get("id_produto_servico")
+            quantidade = int(item.get("quantidade", 1))
+            vl_unitario = float(item.get("vl_unitario", 0.0))
+            vl_total = vl_unitario * quantidade
+
+            query_item = """
+                INSERT INTO agendamento_produto_servico (
+                    id_agendamento,
+                    id_produto_servico,
+                    qt_produto,
+                    vl_unitario_produto,
+                    vl_total_produto
+                ) VALUES (?, ?, ?, ?, ?);
+            """
+            db.execute(query_item, (id_agendamento, id_prod_serv, quantidade, vl_unitario, vl_total))
+
+        db.commit()
+        return jsonify({"message": "Agendamento atualizado com sucesso!"}), 200
+
+    except Exception as e:
+        db.rollback()
+        return jsonify({"error": f"Erro interno ao atualizar agendamento: {str(e)}"}), 500
 
 ############################################################################################################ AGENDAMENTO_PRODUTO_SERVICO
 
@@ -695,6 +768,32 @@ def lanca_compra_produto():
     """
 
     db.execute(query, (vl_edicao, vl_unitario_produto_compra, id_produto_servico))
+    db.commit()
+
+    query_financeiro = """
+        INSERT INTO financeiro (
+        id_agendamento,
+        ds_categoria_financeiro,
+        vl_total,
+        dh_inclusao, dh_alteracao)
+        VALUES (?, ?, ?, DATE('now'), DATE('now'))
+        """
+    db.execute(query_financeiro, (None, 'COMPRA', vl_edicao * vl_unitario_produto_compra))
+    db.commit()
+
+    query_venda_produto_financeiro = """
+        INSERT INTO venda_produto_financeiro (
+        id_financeiro,
+        id_produto_servico,
+        vl_unitario_produto,
+        qt_venda,
+        vl_total_venda,
+        dh_venda, dh_inclusao, dh_alteracao)
+        SELECT id_financeiro, ?, ?, ?, ?, DATE('now'), DATE('now'), DATE('now')
+        FROM financeiro WHERE id_financeiro = (SELECT MAX(id_financeiro) FROM financeiro) 
+        """
+
+    db.execute(query_venda_produto_financeiro, (id_produto_servico, vl_unitario_produto_compra, vl_edicao, vl_edicao * vl_unitario_produto_compra))
     db.commit()
 
     return jsonify({"message": "Estoque atualizado com sucesso!"}), 200
@@ -787,30 +886,125 @@ def edita_financeiro():
 
 ############################################################################################################ DASHBOARDS
 
-@app.route("/busca_produto_estoque_zero", methods=["GET"])
-def busca_produto_estoque_zero():
+@app.route("/dashboard", methods=["GET"])
+def busca_resumo_dashboard():
     db = get_db()
-    cursor = db.execute("SELECT COUNT(id_produto_servico) FROM produto_servico WHERE qt_estoque <= 0 AND ds_categoria = 'PRODUTO';")
+    cursor = db.execute("""
+        SELECT 
+            -- Produtos com estoque zero
+            (SELECT COUNT(id_produto_servico) FROM produto_servico WHERE qt_estoque <= 0 AND ds_categoria = 'PRODUTO') AS produtos_estoque_zero,
+            
+            -- Arrecadação líquida do mês atual (baseada na data do agendamento)
+            (
+                SELECT COALESCE(SUM(f.vl_total), 0.0) 
+                FROM financeiro f
+                JOIN agendamento a ON f.id_agendamento = a.id_agendamento
+                WHERE STRFTIME('%Y-%m', a.dh_agendamento) = STRFTIME('%Y-%m', 'now', 'localtime')
+            ) AS arrecadacao_liquida,
+            
+            -- Percentual de aumento comparado ao mês anterior (baseado no agendamento)
+            (
+                SELECT 
+                    ROUND(
+                        CASE 
+                            WHEN mes_anterior IS NULL OR mes_anterior = 0 THEN 0.0
+                            ELSE ((COALESCE(mes_atual, 0.0) - mes_anterior) / mes_anterior) * 100.0
+                        END, 2
+                    )
+                FROM (
+                    SELECT 
+                        SUM(f.vl_total) FILTER (
+                            WHERE STRFTIME('%Y-%m', a.dh_agendamento) = STRFTIME('%Y-%m', 'now', 'localtime')
+                        ) AS mes_atual,
+                        SUM(f.vl_total) FILTER (
+                            WHERE STRFTIME('%Y-%m', a.dh_agendamento) = STRFTIME('%Y-%m', 'now', 'localtime', '-1 month')
+                        ) AS mes_anterior
+                    FROM financeiro f
+                    JOIN agendamento a ON f.id_agendamento = a.id_agendamento
+                )
+            ) AS percentual_aumento_mes_anterior,
+            
+            -- Ticket médio do mês atual (baseado em dh_inclusao na tabela financeiro)
+            (
+                SELECT COALESCE(AVG(vl_total), 0.0) 
+                FROM financeiro 
+                WHERE STRFTIME('%Y-%m', dh_inclusao) = STRFTIME('%Y-%m', 'now', 'localtime')
+            ) AS ticket_medio,
+            
+            -- Agendamentos de hoje
+            (SELECT COUNT(id_agendamento) FROM agendamento WHERE DATE(dh_agendamento) = DATE('now', 'localtime')) AS agendamentos_hoje
+    """)
     
-    return jsonify({"contagem": cursor.fetchone()[0]})
+    row = cursor.fetchone()
+    
+    return jsonify({
+        "produtos_estoque_zero": row[0],
+        "arrecadacao_liquida": row[1],
+        "percentual_aumento_mes_anterior": row[2] if row[2] is not None else 0.0,
+        "ticket_medio": row[3],
+        "agendamentos_hoje": row[4]
+    })
 
-@app.route("/busca_arrecadacao_liquida", methods=["GET"])
-def busca_arrecadacao_liquida():
+@app.route("/busca_resumo_financeiro", methods=["GET"])
+def busca_resumo_financeiro():
     db = get_db()
-    cursor = db.execute("SELECT SUM(vl_total) FROM financeiro;")
     
-    return jsonify({"contagem": cursor.fetchone()[0]})
+    # 1. Consulta de Serviços (Agendamentos) - Valores positivos
+    cursor_servicos = db.execute("""
+        SELECT 
+            DATE(a.dh_agendamento) as data_agendamento, 
+            SUM(aps.vl_total_produto) as total_dia
+        FROM agendamento_produto_servico aps
+        JOIN agendamento a ON aps.id_agendamento = a.id_agendamento
+        JOIN produto_servico ps ON aps.id_produto_servico = ps.id_produto_servico
+        WHERE ps.ds_categoria = 'SERVICO'
+          AND a.dh_agendamento >= DATE('now', '-30 days')
+        GROUP BY DATE(a.dh_agendamento)
+        ORDER BY data_agendamento ASC
+    """)
+    servicos_dict = {row[0]: row[1] for row in cursor_servicos.fetchall()}
+    
+    # 2. Consulta de Compras - Valores negativos (convertidos para positivo para o gráfico, ou mantidos conforme sua regra)
+    # Nota: se os valores forem negativos (ex: -150), usamos ABS() para ficarem positivos no gráfico de linhas, ou tiramos se preferir.
+    cursor_compras = db.execute("""
+        SELECT 
+            DATE(dh_inclusao) as data_compra, 
+            SUM(ABS(vl_total)) as total_dia
+        FROM financeiro
+        WHERE vl_total < 0
+          AND dh_inclusao >= DATE('now', '-30 days')
+        GROUP BY DATE(dh_inclusao)
+        ORDER BY data_compra ASC
+    """)
+    compras_dict = {row[0]: row[1] for row in cursor_compras.fetchall()}
 
-@app.route("/busca_ticket_medio", methods=["GET"])
-def busca_ticket_medio():
-    db = get_db()
-    cursor = db.execute("SELECT AVG(vl_total) FROM financeiro;")
-    
-    return jsonify({"media": cursor.fetchone()[0]})
+    # Retorna um JSON consolidado com os dois dicionários
+    return jsonify({
+        "servicos": servicos_dict,
+        "compras": compras_dict
+    })
 
-@app.route("/busca_agendamento_hoje", methods=["GET"])
-def busca_agendamento_hoje():
+@app.route("/busca_resumo_produtos", methods=["GET"])
+def busca_resumo_produtos():
     db = get_db()
-    cursor = db.execute("SELECT count(id_agendamento) FROM agendamento WHERE DATE(dh_agendamento) = DATE('now', 'localtime');")
     
-    return jsonify({"contagem": cursor.fetchone()[0]})
+    # 1. Consulta de Serviços (Agendamentos) - Valores positivos
+    cursor_servicos = db.execute("""
+        SELECT COUNT(ps.ds_produto_servico), ps.ds_produto_servico, ps.ds_categoria 
+        FROM agendamento_produto_servico aps
+        JOIN produto_servico ps 
+            ON aps.id_produto_servico = ps.id_produto_servico
+        GROUP BY ps.id_produto_servico
+    """)
+
+    resultados = cursor_servicos.fetchall()
+
+    qtd_vendido = [row[0] for row in resultados]
+    ds_produto_servico = [row[1] for row in resultados]
+    ds_categoria = [row[2] for row in resultados]
+
+    return jsonify({
+        "ds_produto_servico": ds_produto_servico,
+        "qtd_vendido": qtd_vendido,
+        "ds_categoria": ds_categoria
+    })
